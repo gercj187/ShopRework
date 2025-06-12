@@ -1,0 +1,237 @@
+using UnityEngine;
+using UnityModManagerNet;
+using DV;
+using DV.TimeKeeping;
+using System;
+using System.Collections.Generic;
+
+namespace DebugObjectReplacer
+{
+    public class Settings : UnityModManager.ModSettings, IDrawable
+    {
+        public bool EnableShopBlocking = true;
+        public float ShopOpenHour = 6.0f;
+        public float ShopCloseHour = 22.0f;
+
+        public override void Save(UnityModManager.ModEntry modEntry) => Save(this, modEntry);
+
+        public void OnChange() { }
+
+        public void Draw()
+        {
+            GUILayout.Label("<b>Shop-Schließung Einstellungen</b>");
+            EnableShopBlocking = GUILayout.Toggle(EnableShopBlocking, "Ladenschließung aktivieren");
+
+            if (EnableShopBlocking)
+            {
+                GUILayout.Space(10);
+                GUILayout.Label($"Öffnungszeit: {FormatHour(ShopOpenHour)} Uhr");
+                ShopOpenHour = Mathf.Round(GUILayout.HorizontalSlider(ShopOpenHour, 0f, 23.9f) * 60f) / 60f;
+
+                GUILayout.Label($"Schließzeit: {FormatHour(ShopCloseHour)} Uhr");
+                ShopCloseHour = Mathf.Round(GUILayout.HorizontalSlider(ShopCloseHour, 0f, 23.9f) * 60f) / 60f;
+            }
+        }
+
+        private string FormatHour(float hourFloat)
+        {
+            int hour = Mathf.FloorToInt(hourFloat);
+            int minute = Mathf.RoundToInt((hourFloat - hour) * 60f);
+            return $"{hour:00}:{minute:00}";
+        }
+    }
+
+    [EnableReloading]
+    public static class Main
+    {
+        public static Settings settings;
+        private static bool hasRun = false;
+        private static GameObject fakeShopPrefab;
+
+        static bool Load(UnityModManager.ModEntry modEntry)
+        {
+            settings = UnityModManager.ModSettings.Load<Settings>(modEntry);
+            modEntry.OnGUI = _ => settings.Draw();
+            modEntry.OnSaveGUI = _ => settings.Save(modEntry);
+
+            WorldStreamingInit.LoadingFinished += OnWorldLoaded;
+            Debug.Log("[DebugObjectReplacer] Mod loaded and registered.");
+            return true;
+        }
+
+        static void OnWorldLoaded()
+        {
+            if (hasRun) return;
+            hasRun = true;
+
+            string path = "Far__x12_z10_LFS/Far_IndustryBuildings/FakeShop/FakeItemShop";
+            fakeShopPrefab = GameObject.Find(path);
+            if (fakeShopPrefab == null)
+                Debug.LogError("[DebugObjectReplacer] ❌ FakeItemShop prefab not found at path: " + path);
+
+            GameObject go = new GameObject("ZoneBlockerWatcher");
+            go.AddComponent<ZoneBlockerWatcher>();
+            UnityEngine.Object.DontDestroyOnLoad(go);
+        }
+
+        public static void DestroyAllBlockersAndShops()
+        {
+            foreach (GameObject obj in GameObject.FindObjectsOfType<GameObject>())
+            {
+                if (obj.name.StartsWith("ShopBlocker_") || obj.name.StartsWith("ShopClosed_"))
+                    UnityEngine.Object.Destroy(obj);
+            }
+        }
+
+        public static void PlaceAllBlockersAndFakeShops()
+        {
+            string[] names = new string[]
+            {
+                "Weststadt",
+                "Maschinenfabrik",
+                "WarenfabrikStadt",
+                "HafenStadt",
+                "LebensmittelStadt"
+            };
+
+            Vector3[] positions = new Vector3[]
+            {
+                new Vector3(266.8f, 120.3f, 25.0f),
+                new Vector3(588.5f, 157.3f, 136.4f),
+                new Vector3(689.8f, 138.2f, 462.4f),
+                new Vector3(256.3f, 111.1f, 322.0f),
+                new Vector3(477.1f, 117.3f, 250.9f)
+            };
+
+            Vector3[] rotationsY = new Vector3[]
+            {
+                new Vector3(0f, 43.3f, 0f),
+                new Vector3(0f, 181.6f, 0f),
+                new Vector3(0f, 241.8f, 0f),
+                new Vector3(0f, 273.0f, 0f),
+                new Vector3(0f, 21.0f, 0f)
+            };
+
+            for (int i = 0; i < names.Length; i++)
+            {
+                GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                cube.name = $"ShopBlocker_{names[i]}";
+                cube.transform.position = positions[i] + Quaternion.Euler(rotationsY[i]) * Vector3.right * 1f;
+                cube.transform.rotation = Quaternion.Euler(rotationsY[i]);
+                cube.transform.localScale = new Vector3(8.8f, 9f, 6f);
+                cube.layer = LayerMask.NameToLayer("Default");
+                cube.isStatic = true;
+
+                Material transparentMat = new Material(Shader.Find("Standard"));
+                transparentMat.color = new Color(0.2f, 0.2f, 0.2f, 0.1f);
+                transparentMat.SetFloat("_Mode", 3);
+                transparentMat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                transparentMat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                transparentMat.SetInt("_ZWrite", 0);
+                transparentMat.DisableKeyword("_ALPHATEST_ON");
+                transparentMat.EnableKeyword("_ALPHABLEND_ON");
+                transparentMat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+                transparentMat.renderQueue = 3000;
+                cube.GetComponent<Renderer>().material = transparentMat;
+
+                cube.AddComponent<BoxCollider>();
+                cube.AddComponent<SimpleZoneBlocker>();
+
+				/*
+                if (fakeShopPrefab != null)
+                {
+                    GameObject clone = UnityEngine.Object.Instantiate(fakeShopPrefab);
+                    clone.name = $"ShopClosed_{names[i]}";
+                    clone.transform.position = positions[i];
+                    clone.transform.rotation = Quaternion.Euler(rotationsY[i]);
+                    clone.transform.localScale = Vector3.one;
+                    UnityEngine.Object.DontDestroyOnLoad(clone);
+                }				
+				*/
+            }
+        }
+    }
+
+    public class ZoneBlockerWatcher : MonoBehaviour
+    {
+        private float checkInterval = 10f;
+        private float timeSinceLastCheck = 0f;
+        private bool blockersActive = false;
+
+        void Update()
+        {
+            timeSinceLastCheck += Time.deltaTime;
+            if (timeSinceLastCheck < checkInterval) return;
+            timeSinceLastCheck = 0f;
+
+            if (!Main.settings.EnableShopBlocking) return;
+
+            var worldClock = FindObjectOfType<WorldClockController>();
+            if (worldClock == null) return;
+
+            DateTime currentGameTime = worldClock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
+            float currentHour = currentGameTime.Hour + currentGameTime.Minute / 60f;
+
+            float open = Main.settings.ShopOpenHour;
+            float close = Main.settings.ShopCloseHour;
+
+            bool isNight = close > open
+                ? (currentHour >= close || currentHour < open)
+                : (currentHour >= close && currentHour < open);
+
+            if (isNight)
+            {
+                if (!blockersActive)
+                {
+                    Debug.Log("[DebugObjectReplacer] Nacht erkannt – Blocker & Shops aktivieren.");
+                    Main.PlaceAllBlockersAndFakeShops();
+                    blockersActive = true;
+                }
+				/*
+                else
+                {
+                    string[] expected = {
+                        "ShopClosed_Weststadt", "ShopClosed_Maschinenfabrik",
+                        "ShopClosed_WarenfabrikStadt", "ShopClosed_HafenStadt",
+                        "ShopClosed_LebensmittelStadt"
+                    };
+
+                    foreach (var name in expected)
+                    {
+                        if (GameObject.Find(name) == null)
+                        {
+                            Debug.Log($"[DebugObjectReplacer] {name} fehlt – spawne alle Shops erneut.");
+                            Main.PlaceAllBlockersAndFakeShops();
+                            break;
+                        }
+                    }
+                }
+				*/
+            }
+            else if (blockersActive)
+            {
+                Debug.Log("[DebugObjectReplacer] Tag erkannt – Blocker & Shops entfernen.");
+                Main.DestroyAllBlockersAndShops();
+                blockersActive = false;
+            }
+        }
+    }
+
+    public class SimpleZoneBlocker : ZoneBlocker
+    {
+        public override string GetHoverText()
+        {
+            float open = Main.settings?.ShopOpenHour ?? 6.0f;
+            float close = Main.settings?.ShopCloseHour ?? 22.0f;
+
+            string FormatTime(float hourFloat)
+            {
+                int hour = Mathf.FloorToInt(hourFloat);
+                int minute = Mathf.RoundToInt((hourFloat - hour) * 60f);
+                return $"{hour:00}:{minute:00}";
+            }
+
+            return $"Shop geschlossen!\nÖffnungszeiten:\n{FormatTime(open)} - {FormatTime(close)} Uhr\n ";
+        }
+    }
+}
