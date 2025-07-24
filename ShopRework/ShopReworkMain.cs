@@ -566,7 +566,7 @@ namespace ShopRework
 			{
 				Main.dayCounter = 1;
 				dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
-				Debug.Log("[ShopRework] New career started – ShopRework_CurrentDay set to 1.");
+				Debug.Log("[ShopRework] New career started – 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
 			}
 		}
 	}
