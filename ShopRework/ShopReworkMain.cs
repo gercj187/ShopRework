@@ -10,6 +10,7 @@ using System.Linq;
 using System;
 using DV.TimeKeeping;
 using DV.Shops;
+using Newtonsoft.Json.Linq;
 using TMPro;
 
 namespace ShopRework
@@ -23,6 +24,7 @@ namespace ShopRework
 		public float ShopOpenHour = 6.0f;
 		public float ShopCloseHour = 22.0f;
 		public bool ShopClosedOnSunday = false;
+		public float lastIngameHoursAtDayChange = -999f;
 
 		public int persistentDayCounter = 0;
 		public DateTime lastKnownDate = DateTime.MinValue;
@@ -97,7 +99,6 @@ namespace ShopRework
 		{
 			mod = modEntry;
 			settings = UnityModManager.ModSettings.Load<Settings>(modEntry);
-			dayCounter = settings.persistentDayCounter;
 			lastKnownDate = settings.lastKnownDate;
 			modEntry.OnGUI = _ => settings.Draw();
 			modEntry.OnSaveGUI = _ => settings.Save(modEntry);
@@ -325,16 +326,7 @@ namespace ShopRework
 		private DateTime lastGameDayCheck = DateTime.MinValue;
 		private float checkInterval = 60f;
 		private float timeSinceLastCheck = 0f;
-		private GameObject? player;
 		
-		private int lastNearestShopIndex = -1;
-		private bool lastShouldBeBlocked = false;
-		
-		void Start()
-		{
-			player = GameObject.FindWithTag("Player");
-		}
-
 		void Update()
 		{
 			timeSinceLastCheck += Time.deltaTime;
@@ -344,17 +336,25 @@ namespace ShopRework
 			var clock = FindObjectOfType<WorldClockController>();
 			if (clock == null) return;
 
-			DateTime now = clock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
-			float hour = now.Hour + now.Minute / 60f;
+			DateTime time = clock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
+			float hour = time.Hour + time.Minute / 60f;
 
-			// Tageswechsel prüfen
-			if (now.Date != Main.lastKnownDate.Date)
+			// Initialisierung beim ersten Update
+			float currentHours = (float)(time - DateTime.MinValue).TotalHours;
+			if (Main.settings.lastIngameHoursAtDayChange < 0f)
 			{
-				Main.lastKnownDate = now.Date;
-				Main.settings.lastKnownDate = Main.lastKnownDate;
-				Main.dayCounter++;
-				Main.settings.persistentDayCounter = Main.dayCounter;
+				Main.settings.lastIngameHoursAtDayChange = currentHours;
 				Main.settings.Save(Main.mod);
+			}
+
+			// Spieltag erhöhen, wenn seit dem letzten Wechsel 24 Stunden vergangen sind
+			if (currentHours - Main.settings.lastIngameHoursAtDayChange >= 24f)
+			{
+				Main.dayCounter++;
+				Main.settings.lastIngameHoursAtDayChange = currentHours;
+				Main.settings.Save(Main.mod);
+
+				//Debug.Log($"[ShopRework] Spieltag wurde erhöht auf: {Main.dayCounter}");
 
 				DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
 				Debug.Log($"[ShopRework] Actual Ingame-Day: {weekday}");
@@ -362,18 +362,12 @@ namespace ShopRework
 				bool weekly = Main.settings.UseWeeklyDiscounts;
 				if (!weekly || weekday == DayOfWeek.Monday)
 				{
-					Debug.Log($"[ShopRework] Discounds: ({(weekly ? "Weekly" : "Daily")})");
+					Debug.Log($"[ShopRework] Discounts: ({(weekly ? "Weekly" : "Daily")})");
 					ShopReworkManager.ApplyNewDiscounts();
-				}
-				else
-				{
-					//Debug.Log($"[ShopRework] Keine neuen Discounts heute ({weekday}) – Weekly-Modus aktiv");
 				}
 			}
 
-			if (!Main.settings.EnableShopBlocking) return;
-
-			// Bedingungen für Blockierung prüfen
+			// Blockierlogik global berechnen
 			DayOfWeek day = (DayOfWeek)(Main.dayCounter % 7);
 			bool isSunday = day == DayOfWeek.Sunday;
 			float open = Main.settings.ShopOpenHour;
@@ -381,50 +375,33 @@ namespace ShopRework
 			bool isNight = close > open ? (hour >= close || hour < open) : (hour >= close && hour < open);
 			bool shouldBeBlocked = (Main.settings.ShopClosedOnSunday && isSunday) || isNight;
 
-			if (player == null)
+			if (!shouldBeBlocked)
 			{
-				player = GameObject.FindWithTag("Player");
-				if (player == null) return;
-				Debug.Log("[ShopRework] Player found.");
+				// Alles deaktivieren
+				foreach (var b in Main.spawnedBlockers)
+					if (b != null && b.activeSelf)
+						b.SetActive(false);
+				Debug.Log("[ShopRework] All Shops are opened.");
+				return;
 			}
-			Vector3 playerPos = player.transform.position;
 
-			// Nächstgelegenen Shop bestimmen
-			int nearestBlockedShopIndex = -1;
-			float nearestDistance = float.MaxValue;
+			// Blocker pro Shop aktivieren, wenn ein ShopItem in der Nähe ist
+			var allShopItems = GameObject.FindObjectsOfType<ScanItemCashRegisterModule>();
 
 			for (int i = 0; i < Main.shopPositions.Length; i++)
 			{
-				float dist = Vector3.Distance(playerPos, Main.shopPositions[i]);
-				if (dist < nearestDistance)
+				string blockerName = $"ShopBlocker_{i}";
+				bool hasNearbyShopItem = allShopItems.Any(item =>
+					item != null && Vector3.Distance(item.transform.position, Main.shopPositions[i]) < 30f);
+
+				foreach (var b in Main.spawnedBlockers.Where(b => b != null && b.name == blockerName))
 				{
-					nearestDistance = dist;
-					nearestBlockedShopIndex = i;
+					if (b.activeSelf != hasNearbyShopItem)
+						b.SetActive(hasNearbyShopItem);
 				}
 			}
 
-			// Status nur vom Main-Blocker prüfen (spart massiv Performance)
-			if (shouldBeBlocked != lastShouldBeBlocked || lastNearestShopIndex != nearestBlockedShopIndex)
-			{
-				for (int i = 0; i < Main.shopPositions.Length; i++)
-				{
-					string blockerName = $"ShopBlocker_{i}";
-					GameObject? mainBlocker = Main.spawnedBlockers.FirstOrDefault(b => b != null && b.name == blockerName);
-
-					bool shouldActivate = (i == nearestBlockedShopIndex) && shouldBeBlocked;
-
-					if (mainBlocker != null && mainBlocker.activeSelf != shouldActivate)
-					{
-						foreach (var b in Main.spawnedBlockers.Where(b => b != null && b.name == blockerName))
-							b.SetActive(shouldActivate);
-
-						Debug.Log($"[ShopRework] Shop {i} is {(shouldActivate ? "closed" : "opened")}.");
-					}
-				}
-
-				lastShouldBeBlocked = shouldBeBlocked;
-				lastNearestShopIndex = nearestBlockedShopIndex;
-			}
+			Debug.Log("[ShopRework] All Shops are closed.");
 		}
 	}
 
@@ -483,7 +460,7 @@ namespace ShopRework
 			float pct = Main.settings.discountPercentage;
 
 			Debug.Log($"[ShopRework] SETTINGS: Number of Items = {n}, Discount = {(pct == 0 ? "random" : pct + "%")}");
-
+			
 			var selected = allItems.OrderBy(x => UnityEngine.Random.value).Take(n).ToList();
 			Debug.Log($"[ShopRework] {selected.Count} Shop-Items are in Sale!");
 
@@ -544,6 +521,10 @@ namespace ShopRework
 			// NEU: Alle Blocker unsichtbar vorbereiten
 			Main.SpawnAllBlockersInactive();
 			Debug.Log("[ShopRework] All Shops initialised.");
+
+			// Aktuellen Ingame-Wochentag loggen
+			DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
+			Debug.Log($"[ShopRework] Actual Ingame-Day: {weekday}");
 		}
 	}
 
@@ -570,6 +551,61 @@ namespace ShopRework
 					break;
 				}
 			}
+		}
+	}	
+	
+	[HarmonyPatch(typeof(StartGameData_NewCareer), "PrepareNewSaveData")]
+	static class Patch_NewCareerPrepareNewSave
+	{
+		static void Postfix(ref SaveGameData saveGameData)
+		{
+			if (saveGameData == null) return;
+
+			var dataObject = Traverse.Create(saveGameData).Field("dataObject").GetValue<JObject>();
+			if (!dataObject.ContainsKey("ShopRework_CurrentDay"))
+			{
+				Main.dayCounter = 1;
+				dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
+				Debug.Log("[ShopRework] New career started – ShopRework_CurrentDay set to 1.");
+			}
+		}
+	}
+
+
+	[HarmonyPatch(typeof(StartGameData_FromSaveGame), "MakeCurrent")]
+	static class Patch_StartGameData_FromSaveGame_MakeCurrent
+	{
+		static void Postfix(StartGameData_FromSaveGame __instance)
+		{
+			var saveData = Traverse.Create(__instance).Field("saveGameData").GetValue<SaveGameData>();
+			if (saveData == null) return;
+
+			var dataObject = Traverse.Create(saveData).Field("dataObject").GetValue<JObject>();
+
+			if (!dataObject.ContainsKey("ShopRework_CurrentDay"))
+			{
+				Main.dayCounter = 1;
+				Debug.Log("[ShopRework] Created new savegame entry 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
+			}
+			else
+			{
+				Main.dayCounter = dataObject["ShopRework_CurrentDay"]!.ToObject<int>();
+				DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
+				Debug.Log($"[ShopRework] Savegame loaded, current day: {weekday}");
+			}
+		}
+	}
+
+	[HarmonyPatch(typeof(SaveGameManager), "Save")]
+	static class Patch_SaveGameSave
+	{
+		static void Prefix()
+		{
+			var saveData = SaveGameManager.Instance?.data;
+			if (saveData == null) return;
+
+			var dataObject = Traverse.Create(saveData).Field("dataObject").GetValue<JObject>();
+			dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
 		}
 	}
 }
