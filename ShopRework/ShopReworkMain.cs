@@ -80,19 +80,19 @@ namespace ShopRework
 		public static readonly List<Shop> allShops = new();
 
 		public static readonly Vector3[] shopPositions = {
-			new Vector3(266.8f, 120.3f, 25.0f),			//CitySouthWest
+			new Vector3(266.8f, 120.3f, 25.0f),		//CitySouthWest
 			new Vector3(588.5f, 157.3f, 136.4f),		//MachineFactory
 			new Vector3(689.8f, 138.2f, 462.4f),		//GoodsFactory
 			new Vector3(256.3f, 111.1f, 322.0f),		//Harbor
-			new Vector3(477.1f, 117.3f, 250.9f)			//FoodFactory
+			new Vector3(477.1f, 117.3f, 250.9f)		//FoodFactory
 		};
 
 		public static readonly Vector3[] shopRotations = {
-			new Vector3(0f, 43.3f, 0f),			 		//CitySouthWest
-			new Vector3(0f, 181.6f, 0f),				//MachineFactory
-			new Vector3(0f, 241.8f, 0f),				//GoodsFactory
-			new Vector3(0f, 273.0f, 0f),				//Harbor
-			new Vector3(0f, 21.0f, 0f)					//FoodFactory
+			new Vector3(0f, 43.3f, 0f),			 //CitySouthWest
+			new Vector3(0f, 181.6f, 0f),			//MachineFactory
+			new Vector3(0f, 241.8f, 0f),			//GoodsFactory
+			new Vector3(0f, 273.0f, 0f),			//Harbor
+			new Vector3(0f, 21.0f, 0f)			//FoodFactory
 		};
 
 		static bool Load(UnityModManager.ModEntry modEntry)
