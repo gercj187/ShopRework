@@ -1,4 +1,4 @@
-// Datei: ShopReworkMain.cs
+//Datei: ShopReworkMain.cs
 
 using UnityModManagerNet;
 using HarmonyLib;
@@ -25,7 +25,6 @@ namespace ShopRework
 		public float ShopCloseHour = 22.0f;
 		public bool ShopClosedOnSunday = false;
 		public float lastIngameHoursAtDayChange = -999f;
-
 		public int persistentDayCounter = 0;
 		public DateTime lastKnownDate = DateTime.MinValue;
 
@@ -80,19 +79,19 @@ namespace ShopRework
 		public static readonly List<Shop> allShops = new();
 
 		public static readonly Vector3[] shopPositions = {
-			new Vector3(266.8f, 120.3f, 25.0f),		//CitySouthWest
+			new Vector3(266.8f, 120.3f, 25.0f),			//CitySouthWest
 			new Vector3(588.5f, 157.3f, 136.4f),		//MachineFactory
 			new Vector3(689.8f, 138.2f, 462.4f),		//GoodsFactory
 			new Vector3(256.3f, 111.1f, 322.0f),		//Harbor
-			new Vector3(477.1f, 117.3f, 250.9f)		//FoodFactory
+			new Vector3(477.1f, 117.3f, 250.9f)			//FoodFactory
 		};
 
 		public static readonly Vector3[] shopRotations = {
-			new Vector3(0f, 43.3f, 0f),			 //CitySouthWest
-			new Vector3(0f, 181.6f, 0f),			//MachineFactory
-			new Vector3(0f, 241.8f, 0f),			//GoodsFactory
-			new Vector3(0f, 273.0f, 0f),			//Harbor
-			new Vector3(0f, 21.0f, 0f)			//FoodFactory
+			new Vector3(0f, 43.3f, 0f),			 		//CitySouthWest
+			new Vector3(0f, 181.6f, 0f),				//MachineFactory
+			new Vector3(0f, 241.8f, 0f),				//GoodsFactory
+			new Vector3(0f, 273.0f, 0f),				//Harbor
+			new Vector3(0f, 21.0f, 0f)					//FoodFactory
 		};
 
 		static bool Load(UnityModManager.ModEntry modEntry)
@@ -303,7 +302,7 @@ namespace ShopRework
 				Transform player = other.transform;
 				Vector3 pushDirection = (player.position - transform.position).normalized;
 
-				// Spieler sanft herausbewegen
+				//Spieler sanft herausbewegen
 				player.position += pushDirection * 0.0f;
 
 				//Debug.Log($"[ShopRework] Spieler aus ShopBlocker entfernt: {player.name}");
@@ -312,7 +311,7 @@ namespace ShopRework
 
 		private void OnTriggerEnter(Collider other)
 		{
-			// Für alle anderen Objekte sofortige Kollision deaktivieren
+			//Für alle anderen Objekte sofortige Kollision deaktivieren
 			if (!other.CompareTag("Player") && other.attachedRigidbody != null)
 			{
 				Physics.IgnoreCollision(other, GetComponent<Collider>(), true);
@@ -320,41 +319,41 @@ namespace ShopRework
 			}
 		}
 	}
+	
+	public class PersistentDiscountID : MonoBehaviour
+	{
+		[SerializeField]
+		public string persistentID = System.Guid.NewGuid().ToString();
+	}
 
 	public class ShopReworkWatcher : MonoBehaviour
 	{
 		private DateTime lastGameDayCheck = DateTime.MinValue;
 		private float checkInterval = 60f;
 		private float timeSinceLastCheck = 0f;
+		private bool? lastShopStatus = null;
 		
 		void Update()
 		{
 			timeSinceLastCheck += Time.deltaTime;
 			if (timeSinceLastCheck < checkInterval) return;
 			timeSinceLastCheck = 0f;
+			
+			ShopReworkManager.ReapplySavedDiscounts();
 
 			var clock = FindObjectOfType<WorldClockController>();
 			if (clock == null) return;
 
-			DateTime time = clock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
-			float hour = time.Hour + time.Minute / 60f;
+			DateTime now = clock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
+			DateTime today = now.Date;
+			DateTime lastSaved = Main.settings.lastKnownDate.Date;
 
-			// Initialisierung beim ersten Update
-			float currentHours = (float)(time - DateTime.MinValue).TotalHours;
-			if (Main.settings.lastIngameHoursAtDayChange < 0f)
-			{
-				Main.settings.lastIngameHoursAtDayChange = currentHours;
-				Main.settings.Save(Main.mod);
-			}
-
-			// Spieltag erhöhen, wenn seit dem letzten Wechsel 24 Stunden vergangen sind
-			if (currentHours - Main.settings.lastIngameHoursAtDayChange >= 24f)
+			//Tageswechsel prüfen (exakt bei Mitternacht)
+			if (today != lastSaved)
 			{
 				Main.dayCounter++;
-				Main.settings.lastIngameHoursAtDayChange = currentHours;
+				Main.settings.lastKnownDate = today;
 				Main.settings.Save(Main.mod);
-
-				//Debug.Log($"[ShopRework] Spieltag wurde erhöht auf: {Main.dayCounter}");
 
 				DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
 				Debug.Log($"[ShopRework] Actual Ingame-Day: {weekday}");
@@ -366,28 +365,33 @@ namespace ShopRework
 					ShopReworkManager.ApplyNewDiscounts();
 				}
 			}
-
-			// Blockierlogik global berechnen
+			
+			//Shopöffnungszeiten auswerten
+			float hour = now.Hour + now.Minute / 60f;
 			DayOfWeek day = (DayOfWeek)(Main.dayCounter % 7);
 			bool isSunday = day == DayOfWeek.Sunday;
 			float open = Main.settings.ShopOpenHour;
 			float close = Main.settings.ShopCloseHour;
 			bool isNight = close > open ? (hour >= close || hour < open) : (hour >= close && hour < open);
 			bool shouldBeBlocked = (Main.settings.ShopClosedOnSunday && isSunday) || isNight;
-
+			
 			if (!shouldBeBlocked)
 			{
-				// Alles deaktivieren
+				//Alles deaktivieren
 				foreach (var b in Main.spawnedBlockers)
 					if (b != null && b.activeSelf)
 						b.SetActive(false);
-				Debug.Log("[ShopRework] All Shops are opened.");
+					
+				if (lastShopStatus != false)
+				{
+					Debug.Log("[ShopRework] All Shops are opened.");
+					lastShopStatus = false;
+				}
 				return;
 			}
 
-			// Blocker pro Shop aktivieren, wenn ein ShopItem in der Nähe ist
+			//Blocker pro Shop aktivieren, wenn ein ShopItem in der Nähe ist
 			var allShopItems = GameObject.FindObjectsOfType<ScanItemCashRegisterModule>();
-
 			for (int i = 0; i < Main.shopPositions.Length; i++)
 			{
 				string blockerName = $"ShopBlocker_{i}";
@@ -401,7 +405,11 @@ namespace ShopRework
 				}
 			}
 
-			Debug.Log("[ShopRework] All Shops are closed.");
+			if (lastShopStatus != true)
+			{
+				Debug.Log("[ShopRework] All Shops are closed.");
+				lastShopStatus = true;
+			}			
 		}
 	}
 
@@ -425,21 +433,51 @@ namespace ShopRework
 		private static Dictionary<ScanItemCashRegisterModule, float> originalPrices = new();
 		private static bool discountsAppliedOnce = false;
 		public static int ItemCount => allItems.Count;
-
-		public static void RegisterShopItem(ScanItemCashRegisterModule item)
+		private static bool discountsLoadedFromSavegame = false;
+        public static Dictionary<string, float> savedDiscounts = new();
+		
+		public static string GetDiscountID(ScanItemCashRegisterModule item)
 		{
+			return item.GetInstanceID().ToString();
+		}
+		
+		public static void RegisterShopItem(ScanItemCashRegisterModule item)
+		{		
+			string id = GetDiscountID(item);		
 			if (item == null || allItems.Contains(item)) return;
-
 			bool isFromShop = item.transform.GetComponentInParent<Shop>() != null;
 			if (!isFromShop) return;
 
 			allItems.Add(item);
+			
+			
 			if (item.Data != null && !originalPrices.ContainsKey(item))
+			{
 				originalPrices[item] = item.Data.pricePerUnit;
+				//Debug.Log($"[ShopRework] Shop-Item registriert: {item.name}, ID: {id} – Preis: {item.Data.pricePerUnit}");
+			}
+			else
+			{
+				//Debug.Log($"[ShopRework] Shop-Item {item.name}, ID: {id} hat keine gültigen Daten (item.Data ist null).");
+			}
 
-			//Debug.Log($"[ShopRework] Shop-Item registriert: {item.name} – Preis: {item.Data?.pricePerUnit}");
+			if (item.Data != null && savedDiscounts.TryGetValue(id, out float discount))
+            {
+                float original = originalPrices.TryGetValue(item, out float p) ? p : item.Data.pricePerUnit;
+                float newPrice = Mathf.Round(original * (1f - discount / 100f));
+                item.Data.pricePerUnit = newPrice;
+                item.UpdateTexts();
 
-			if (!discountsAppliedOnce && Main.enabled)
+                var text = AccessPrivateText(item);
+                if (text != null) text.color = new Color32(153, 0, 0, 255);
+                //Debug.Log($"[ShopRework] Rabatt aus Savegame angewendet: {item.name}, ID: {id} → {newPrice}$");
+            }
+			else
+			{
+				//Debug.Log($"[ShopRework] Kein Rabatt gefunden für: {item.name}, ID: {id}");
+			}
+			
+			if (!discountsAppliedOnce && Main.enabled && !discountsLoadedFromSavegame)
 			{
 				//Debug.Log("[ShopRework] Erste gültige Shop-Items registriert – wende initiale Discounts an.");
 				discountsAppliedOnce = true;
@@ -452,33 +490,59 @@ namespace ShopRework
 		public static void ApplyNewDiscounts()
 		{
 			if (!Main.enabled) return;
-			//Debug.Log($"[ShopRework] Beginne Rabattvergabe. Aktive Items: {allItems.Count}");
 
+			//Debug.Log($"[ShopRework] Beginne Rabattvergabe. Aktive Items: {allItems.Count}");
 			foreach (var i in allItems) ResetDiscount(i);
+			savedDiscounts.Clear();
 
 			int n = Mathf.Min(Main.settings.discountedItemsPerDay, allItems.Count);
 			float pct = Main.settings.discountPercentage;
 
 			Debug.Log($"[ShopRework] SETTINGS: Number of Items = {n}, Discount = {(pct == 0 ? "random" : pct + "%")}");
-			
 			var selected = allItems.OrderBy(x => UnityEngine.Random.value).Take(n).ToList();
 			Debug.Log($"[ShopRework] {selected.Count} Shop-Items are in Sale!");
 
 			foreach (var i in selected)
 			{
-				if (i?.Data == null) continue;
-				if (!originalPrices.ContainsKey(i)) originalPrices[i] = i.Data.pricePerUnit;
+				if (i == null || i.Data == null) continue;
+
+				if (!originalPrices.ContainsKey(i))
+					originalPrices[i] = i.Data.pricePerUnit;
 
 				float discount = pct > 0 ? pct : UnityEngine.Random.Range(5f, 50f);
-				float original = originalPrices[i];
+				float original = originalPrices.TryGetValue(i, out float p) ? p : i.Data.pricePerUnit;
 				float newPrice = Mathf.Round(original * (1f - discount / 100f));
 				i.Data.pricePerUnit = newPrice;
 				i.UpdateTexts();
 
 				var text = AccessPrivateText(i);
 				if (text != null) text.color = new Color32(153, 0, 0, 255);
+				
+				string id = GetDiscountID(i);
+				string cleanName = i.name.Replace("_ShelfItem", "");
+				savedDiscounts[id] = discount;
 
-				Debug.Log($"[ShopRework] Item: {i.name}, Price: {original}$ -{discount:0.#}% = {newPrice}$)");
+				Debug.Log($"[ShopRework] Item: {cleanName}, ID: {id}, Price: {original}$ -{discount:0.#}% = {newPrice}$");
+			}
+		}
+		
+		public static void ReapplySavedDiscounts()
+		{
+			foreach (var item in allItems)
+			{
+				if (item == null || item.Data == null) continue;
+
+				string id = GetDiscountID(item);
+				if (savedDiscounts.TryGetValue(id, out float discount))
+				{
+					float original = originalPrices.TryGetValue(item, out float p) ? p : item.Data.pricePerUnit;
+					float newPrice = Mathf.Round(original * (1f - discount / 100f));
+					item.Data.pricePerUnit = newPrice;
+					item.UpdateTexts();
+
+					var text = AccessPrivateText(item);
+					if (text != null) text.color = new Color32(153, 0, 0, 255);
+				}
 			}
 		}
 
@@ -494,6 +558,76 @@ namespace ShopRework
 		{
 			var f = typeof(ScanItemCashRegisterModule).GetField("itemPriceText", BindingFlags.NonPublic | BindingFlags.Instance);
 			return f?.GetValue(item) as TextMeshPro;
+		}
+
+		public static void LoadSavedDiscounts(Dictionary<string, float> discounts)
+		{
+			savedDiscounts = discounts;
+			discountsLoadedFromSavegame = true;
+
+			foreach (var item in allItems)
+			{
+				if (item == null || item.Data == null) continue;
+				string id = GetDiscountID(item);
+
+				if (savedDiscounts.TryGetValue(id, out float discount))
+				{
+					float original = originalPrices.TryGetValue(item, out float p) ? p : item.Data.pricePerUnit;
+					float newPrice = Mathf.Round(original * (1f - discount / 100f));
+					item.Data.pricePerUnit = newPrice;
+					item.UpdateTexts();
+
+					var text = AccessPrivateText(item);
+					if (text != null) text.color = new Color32(153, 0, 0, 255);
+					//Debug.Log($"[ShopRework] Rabatt aus Savegame geladen: {item.name}, ID: {id} → {newPrice}$");
+				}
+			}
+			Debug.Log($"[ShopRework] Discounts loaded from Savegame.");
+		}
+	}
+
+    [HarmonyPatch(typeof(StartGameData_FromSaveGame), "MakeCurrent")]
+    static class Patch_StartGameData_FromSaveGame_MakeCurrent
+    {
+        static void Postfix(StartGameData_FromSaveGame __instance)
+        {
+            var saveData = Traverse.Create(__instance).Field("saveGameData").GetValue<SaveGameData>();
+            if (saveData == null) return;
+
+            var dataObject = Traverse.Create(saveData).Field("dataObject").GetValue<JObject>();
+
+            if (!dataObject.ContainsKey("ShopRework_CurrentDay"))
+            {
+                Main.dayCounter = 1;
+                Debug.Log("[ShopRework] Created new savegame entry 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
+            }
+            else
+            {
+                Main.dayCounter = dataObject["ShopRework_CurrentDay"]!.ToObject<int>();
+                DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
+                Debug.Log($"[ShopRework] Savegame loaded, current day: {weekday}");
+            }
+
+            if (dataObject.ContainsKey("ShopRework_Discounts"))
+            {
+                var dic = dataObject["ShopRework_Discounts"]!.ToObject<Dictionary<string, float>>();
+                if (dic != null)
+					ShopReworkManager.LoadSavedDiscounts(dic);
+            }
+        }
+    }
+
+	[HarmonyPatch(typeof(SaveGameManager), "Save")]
+	static class Patch_SaveGameSave
+	{
+		static void Prefix()
+		{
+			var saveData = SaveGameManager.Instance?.data;
+			if (saveData == null) return;
+
+			var dataObject = Traverse.Create(saveData).Field("dataObject").GetValue<JObject>();
+			dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
+            dataObject["ShopRework_Discounts"] = JObject.FromObject(ShopReworkManager.savedDiscounts);
 		}
 	}
 	
@@ -518,13 +652,13 @@ namespace ShopRework
 			go.AddComponent<ShopReworkWatcher>();
 			UnityEngine.Object.DontDestroyOnLoad(go);
 			
-			// NEU: Alle Blocker unsichtbar vorbereiten
+			//	NEU: Alle Blocker unsichtbar vorbereiten
 			Main.SpawnAllBlockersInactive();
 			Debug.Log("[ShopRework] All Shops initialised.");
 
-			// Aktuellen Ingame-Wochentag loggen
+			//	Aktuellen Ingame-Wochentag loggen
 			DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
-			Debug.Log($"[ShopRework] Actual Ingame-Day: {weekday}");
+			//Debug.Log($"[ShopRework] Actual Ingame-Day: {weekday}");
 		}
 	}
 
@@ -568,44 +702,6 @@ namespace ShopRework
 				dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
 				Debug.Log("[ShopRework] New career started – 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
 			}
-		}
-	}
-
-
-	[HarmonyPatch(typeof(StartGameData_FromSaveGame), "MakeCurrent")]
-	static class Patch_StartGameData_FromSaveGame_MakeCurrent
-	{
-		static void Postfix(StartGameData_FromSaveGame __instance)
-		{
-			var saveData = Traverse.Create(__instance).Field("saveGameData").GetValue<SaveGameData>();
-			if (saveData == null) return;
-
-			var dataObject = Traverse.Create(saveData).Field("dataObject").GetValue<JObject>();
-
-			if (!dataObject.ContainsKey("ShopRework_CurrentDay"))
-			{
-				Main.dayCounter = 1;
-				Debug.Log("[ShopRework] Created new savegame entry 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
-			}
-			else
-			{
-				Main.dayCounter = dataObject["ShopRework_CurrentDay"]!.ToObject<int>();
-				DayOfWeek weekday = (DayOfWeek)(Main.dayCounter % 7);
-				Debug.Log($"[ShopRework] Savegame loaded, current day: {weekday}");
-			}
-		}
-	}
-
-	[HarmonyPatch(typeof(SaveGameManager), "Save")]
-	static class Patch_SaveGameSave
-	{
-		static void Prefix()
-		{
-			var saveData = SaveGameManager.Instance?.data;
-			if (saveData == null) return;
-
-			var dataObject = Traverse.Create(saveData).Field("dataObject").GetValue<JObject>();
-			dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
 		}
 	}
 }
