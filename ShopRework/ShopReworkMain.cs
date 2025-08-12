@@ -868,6 +868,11 @@ namespace ShopRework
                 dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
                 Debug.Log("[ShopRework] New career started – 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
             }
+			if (!dataObject.ContainsKey("ShopRework_Discounts"))
+			{
+				UnityEngine.Object.DontDestroyOnLoad(new GameObject("ShopDiscountInit")
+					.AddComponent<ShopReworkDiscountDelay>());
+			}
         }
     }
 }
