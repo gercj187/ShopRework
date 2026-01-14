@@ -19,6 +19,9 @@ namespace ShopRework
     {
         [Range(0, 50)] public int discountedItemsPerDay = 3;
         [Range(0, 50)] public int discountPercentage = 0;
+		
+		public bool AllowPaintCanDiscounts = false;
+		public bool AllowModPaintCanDiscounts = false;
         public bool UseWeeklyDiscounts = false;
 
         public bool EnableShopBlocking = true;
@@ -42,6 +45,26 @@ namespace ShopRework
 
             GUILayout.Label($"Discount in % (0 = random): {(discountPercentage == 0 ? "random" : discountPercentage + "%")}");
             discountPercentage = (int)GUILayout.HorizontalSlider(discountPercentage, 0, 50);
+
+			GUILayout.Space(10);
+			GUILayout.Label("<b>Paint Can Discount Settings:</b>");
+
+			AllowPaintCanDiscounts = GUILayout.Toggle(
+				AllowPaintCanDiscounts,
+				"Allow PaintCan discounts"
+			);
+			// Wenn Hauptoption AUS → Suboption erzwingen auf false
+			if (!AllowPaintCanDiscounts)
+			{
+				AllowModPaintCanDiscounts = false;
+			}
+			else
+			{
+				AllowModPaintCanDiscounts = GUILayout.Toggle(
+					AllowModPaintCanDiscounts,
+					"Allow MOD PaintCan discounts"
+				);
+			}
 
             GUILayout.Space(10);
             GUILayout.Label("<b>Shop Closure Settings:</b>");
@@ -315,6 +338,46 @@ namespace ShopRework
         [SerializeField] public string persistentID = System.Guid.NewGuid().ToString();
     }
 
+    /// <summary>
+    /// NEU: Batch‑Trigger, der beim Awake der Shop‑Items ein Reapply nach 2s auslöst.
+    /// Jeder weitere Awake‑Call verschiebt das Fenster erneut (debounced).
+    /// Läuft nur, wenn gespeicherte Discounts vorhanden sind.
+    /// </summary>
+    public class ShopItemAwakeBatchApplier : MonoBehaviour
+    {
+        private static ShopItemAwakeBatchApplier? _instance;
+        private float _nextRunAt = -1f;
+        private const float DELAY_SECONDS = 2.0f;
+
+        public static void Touch()
+        {
+            if (_instance == null)
+            {
+                var go = new GameObject("ShopRework_BatchApplier");
+                _instance = go.AddComponent<ShopItemAwakeBatchApplier>();
+                DontDestroyOnLoad(go);
+            }
+            // Jedes Touch verschiebt den geplanten Zeitpunkt nach hinten
+            _instance._nextRunAt = Time.realtimeSinceStartup + DELAY_SECONDS;
+        }
+
+        private void Update()
+        {
+            if (_nextRunAt < 0f) return;
+            if (Time.realtimeSinceStartup < _nextRunAt) return;
+
+            // Reset Zielzeitpunkt vor Ausführung
+            _nextRunAt = -1f;
+
+            if (ShopReworkManager.savedDiscountEntries.Count > 0)
+            {
+                if (Main.settings.DevDebug)
+                    Debug.Log("[ShopRework] BatchApplier: Reapplying saved discounts after item-awake batch.");
+                ShopReworkManager.ReapplySavedDiscounts();
+            }
+        }
+    }
+
     public class ShopReworkWatcher : MonoBehaviour
     {
         private float checkInterval = 60f;
@@ -459,6 +522,14 @@ namespace ShopRework
 
         public static int ItemCount => allItems.Count;
 
+		private static bool IsPaintCan(ScanItemCashRegisterModule item)
+		{
+			if (item == null) return false;
+
+			return item.name == "PaintCan_ShelfItem"
+				|| item.name == "PaintCan_ShelfItem(Clone)";
+		}
+
         public static void RegisterShopItem(ScanItemCashRegisterModule item)
         {
             if (item == null || allItems.Contains(item)) return;
@@ -491,60 +562,100 @@ namespace ShopRework
         }
 
         public static void ApplyNewDiscounts()
-        {
-            if (!Main.enabled) return;
+		{
+			if (!Main.enabled) return;
 
-            foreach (var i in allItems) ResetDiscount(i);
-            savedDiscountEntries.Clear();
-            sessionAssignment.Clear();
+			// Reset aller bestehenden Discounts
+			foreach (var i in allItems)
+				ResetDiscount(i);
 
-            int n = Mathf.Min(Main.settings.discountedItemsPerDay, allItems.Count);
-            float pct = Main.settings.discountPercentage;
+			savedDiscountEntries.Clear();
+			sessionAssignment.Clear();
 
-            Debug.Log($"[ShopRework] SETTINGS: Number of Items = {n}, Discount = {(pct == 0 ? "random" : pct + "%")}");
-            var selected = allItems.OrderBy(x => UnityEngine.Random.value).Take(n).ToList();
-            Debug.Log($"[ShopRework] {selected.Count} Shop-Items are in Sale!");
+			// ----------------------------------------------------
+			// FILTER: PaintCan-Logik basierend auf Settings
+			// ----------------------------------------------------
+			var eligibleItems = allItems.Where(item =>
+			{
+				if (item == null || item.Data == null)
+					return false;
 
-            int runningNumber = 0;
+				if (IsPaintCan(item))
+				{
+					// Hauptschalter AUS -> keinerlei PaintCan-Discounts
+					if (!Main.settings.AllowPaintCanDiscounts)
+						return false;
 
-            foreach (var i in selected)
-            {
-                if (i == null || i.Data == null) continue;
+					// Mod-PaintCans (Clone)
+					if (item.name.Contains("(Clone)") &&
+						!Main.settings.AllowModPaintCanDiscounts)
+						return false;
+				}
 
-                if (!originalPrices.ContainsKey(i))
-                    originalPrices[i] = i.Data.pricePerUnit;
+				return true;
+			}).ToList();
 
-                string shopName = Main.GetShopNameFromItem(i);
+			int n = Mathf.Min(Main.settings.discountedItemsPerDay, eligibleItems.Count);
+			float pct = Main.settings.discountPercentage;
 
-                float discount = pct > 0 ? pct : UnityEngine.Random.Range(5f, 50f);
-                float original = originalPrices.TryGetValue(i, out float p) ? p : i.Data.pricePerUnit;
-                float newPrice = Mathf.Round(original * (1f - discount / 100f));
-                i.Data.pricePerUnit = newPrice;
-                i.UpdateTexts();
+			Debug.Log($"[ShopRework] SETTINGS: Number of Items = {n}, Discount = {(pct == 0 ? "random" : pct + "%")}");
 
-                var text = AccessPrivateText(i);
-                if (text != null) text.color = new Color32(153, 0, 0, 255);
+			var selected = eligibleItems
+				.OrderBy(x => UnityEngine.Random.value)
+				.Take(n)
+				.ToList();
 
-                runningNumber++;
-                savedDiscountEntries.Add(new DiscountEntry
-                {
-                    number = runningNumber,
-                    itemName = i.name,
-                    shopName = shopName,
-                    discount = discount
-                });
+			Debug.Log($"[ShopRework] {selected.Count} Shop-Items are in Sale!");
 
-                sessionAssignment[(shopName, i.name, runningNumber)] = i;
+			int runningNumber = 0;
 
-                if (Main.settings.DevDebug)
-                {
-                    string cleanName = CleanItemName(i.name);
-                    Debug.Log($"[ShopRework] Shop '{shopName}' discounted {cleanName}, Price: {original}$ -{discount:0.#}% = {newPrice}$");
-                }
-            }
+			// ----------------------------------------------------
+			// APPLY DISCOUNTS
+			// ----------------------------------------------------
+			foreach (var i in selected)
+			{
+				if (i == null || i.Data == null)
+					continue;
 
-            MarkSaveDirty();
-        }
+				if (!originalPrices.ContainsKey(i))
+					originalPrices[i] = i.Data.pricePerUnit;
+
+				string shopName = Main.GetShopNameFromItem(i);
+
+				float discount = pct > 0 ? pct : UnityEngine.Random.Range(5f, 50f);
+				float original = originalPrices.TryGetValue(i, out float p)
+					? p
+					: i.Data.pricePerUnit;
+
+				float newPrice = Mathf.Round(original * (1f - discount / 100f));
+				i.Data.pricePerUnit = newPrice;
+				i.UpdateTexts();
+
+				var text = AccessPrivateText(i);
+				if (text != null)
+					text.color = new Color32(153, 0, 0, 255);
+
+				runningNumber++;
+
+				savedDiscountEntries.Add(new DiscountEntry
+				{
+					number = runningNumber,
+					itemName = i.name,
+					shopName = shopName,
+					discount = discount
+				});
+
+				sessionAssignment[(shopName, i.name, runningNumber)] = i;
+
+				if (Main.settings.DevDebug)
+				{
+					string cleanName = CleanItemName(i.name);
+					Debug.Log($"[ShopRework] Shop '{shopName}' discounted {cleanName}, Price: {original}$ -{discount:0.#}% = {newPrice}$");
+				}
+			}
+			MarkSaveDirty();
+		}
+
 
         public static void ReapplySavedDiscounts()
         {
@@ -646,42 +757,42 @@ namespace ShopRework
         }
 
         public static void LoadSavedDiscountsFromToken(JToken? token)
-		{
-			savedDiscountEntries.Clear();
-			sessionAssignment.Clear();
-			discountsLoadedFromSavegame = true;
+        {
+            savedDiscountEntries.Clear();
+            sessionAssignment.Clear();
+            discountsLoadedFromSavegame = true;
 
-			if (token == null || token.Type == JTokenType.Null)
-			{
-				Debug.Log("[ShopRework] No saved discounts found.");
-			}
-			else if (token.Type == JTokenType.Array)
-			{
-				try
-				{
-					var arr = (JArray)token;
-					foreach (var t in arr)
-					{
-						var de = t.ToObject<DiscountEntry>();
-						if (de != null && !string.IsNullOrEmpty(de.itemName) && !string.IsNullOrEmpty(de.shopName))
-							savedDiscountEntries.Add(de);
-					}
-					Debug.Log($"[ShopRework] Discounts loaded from Savegame: {savedDiscountEntries.Count} entries.");
-				}
-				catch (Exception ex)
-				{
-					Debug.Log($"[ShopRework] Failed to parse discounts: {ex}");
-				}
-			}
-			else if (token.Type == JTokenType.Object)
-			{
-				Debug.Log("[ShopRework] Found legacy discount format (per-ID). Unsupported due to unstable IDs, ignoring.");
-			}
-			else
-			{
-				Debug.Log("[ShopRework] Unknown discount token format – ignoring.");
-			}
-		}
+            if (token == null || token.Type == JTokenType.Null)
+            {
+                Debug.Log("[ShopRework] No saved discounts found.");
+            }
+            else if (token.Type == JTokenType.Array)
+            {
+                try
+                {
+                    var arr = (JArray)token;
+                    foreach (var t in arr)
+                    {
+                        var de = t.ToObject<DiscountEntry>();
+                        if (de != null && !string.IsNullOrEmpty(de.itemName) && !string.IsNullOrEmpty(de.shopName))
+                            savedDiscountEntries.Add(de);
+                    }
+                    Debug.Log($"[ShopRework] Discounts loaded from Savegame: {savedDiscountEntries.Count} entries.");
+                }
+                catch (Exception ex)
+                {
+                    Debug.Log($"[ShopRework] Failed to parse discounts: {ex}");
+                }
+            }
+            else if (token.Type == JTokenType.Object)
+            {
+                Debug.Log("[ShopRework] Found legacy discount format (per-ID). Unsupported due to unstable IDs, ignoring.");
+            }
+            else
+            {
+                Debug.Log("[ShopRework] Unknown discount token format – ignoring.");
+            }
+        }
 
         public static JArray ToJsonArraySorted()
         {
@@ -799,35 +910,42 @@ namespace ShopRework
             Destroy(this.gameObject);
         }
     }
-	
-	[HarmonyPatch(typeof(WorldStreamingInit), "Awake")]
-	static class InitPatch
-	{
-		static void Postfix()
-		{
-			GameObject go = new GameObject("ShopReworkController");
-			go.AddComponent<ShopReworkWatcher>();
-			UnityEngine.Object.DontDestroyOnLoad(go);
 
-			var allShopItems = GameObject.FindObjectsOfType<ScanItemCashRegisterModule>();
-			for (int i = 0; i < Main.shopPositions.Length; i++)
-			{
-				bool hasNearbyShopItem = allShopItems.Any(item =>
-					item != null &&
-					Vector3.Distance(item.transform.position, Main.shopPositions[i]) < 30f);
+    [HarmonyPatch(typeof(WorldStreamingInit), "Awake")]
+    static class InitPatch
+    {
+        static void Postfix()
+        {
+            GameObject go = new GameObject("ShopReworkController");
+            go.AddComponent<ShopReworkWatcher>();
+            UnityEngine.Object.DontDestroyOnLoad(go);
 
-				if (hasNearbyShopItem)
-					Main.SpawnBlockerAt(i, false);
-			}
+            var allShopItems = GameObject.FindObjectsOfType<ScanItemCashRegisterModule>();
+            for (int i = 0; i < Main.shopPositions.Length; i++)
+            {
+                bool hasNearbyShopItem = allShopItems.Any(item =>
+                    item != null &&
+                    Vector3.Distance(item.transform.position, Main.shopPositions[i]) < 30f);
 
-			Debug.Log("[ShopRework] Shops initialised.");
-		}
-	}
+                if (hasNearbyShopItem)
+                    Main.SpawnBlockerAt(i, false);
+            }
+
+            Debug.Log("[ShopRework] Shops initialised.");
+        }
+    }
 
     [HarmonyPatch(typeof(ScanItemCashRegisterModule), "Awake")]
     static class ShopItemPatch
     {
-        static void Postfix(ScanItemCashRegisterModule __instance) => ShopReworkManager.RegisterShopItem(__instance);
+        static void Postfix(ScanItemCashRegisterModule __instance)
+        {
+            ShopReworkManager.RegisterShopItem(__instance);
+
+            // NEU: Nur wenn gespeicherte Discounts existieren, einen Batch-Reapply nach 2s planen.
+            if (ShopReworkManager.savedDiscountEntries.Count > 0)
+                ShopItemAwakeBatchApplier.Touch();
+        }
     }
 
     [HarmonyPatch(typeof(Shop), "Awake")]
@@ -868,11 +986,11 @@ namespace ShopRework
                 dataObject["ShopRework_CurrentDay"] = Main.dayCounter;
                 Debug.Log("[ShopRework] New career started – 'ShopRework_CurrentDay' – starting at day 1 (Monday).");
             }
-			if (!dataObject.ContainsKey("ShopRework_Discounts"))
-			{
-				UnityEngine.Object.DontDestroyOnLoad(new GameObject("ShopDiscountInit")
-					.AddComponent<ShopReworkDiscountDelay>());
-			}
+            if (!dataObject.ContainsKey("ShopRework_Discounts"))
+            {
+                UnityEngine.Object.DontDestroyOnLoad(new GameObject("ShopDiscountInit")
+                    .AddComponent<ShopReworkDiscountDelay>());
+            }
         }
     }
 }
