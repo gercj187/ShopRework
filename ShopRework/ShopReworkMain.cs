@@ -509,6 +509,9 @@ namespace ShopRework
 
         private static List<ScanItemCashRegisterModule> allItems = new();
         private static Dictionary<ScanItemCashRegisterModule, float> originalPrices = new();
+		
+		// STABILE Originalpreise pro Shop + Item (entscheidend für späte Shop-Ladung!)
+		private static readonly Dictionary<string, float> originalPricesByKey = new();
 
         private static bool discountsAppliedOnce = false;
         private static bool discountsLoadedFromSavegame = false;
@@ -540,17 +543,29 @@ namespace ShopRework
 
             allItems.Add(item);
 
-            if (item.Data != null && !originalPrices.ContainsKey(item))
-            {
-                originalPrices[item] = item.Data.pricePerUnit;
-                if (Main.settings.DevDebug)
-                    Debug.Log($"[ShopRework] Registered shop item: {item.name} price {item.Data.pricePerUnit} at {shopNameByParent}");
-            }
-            else
-            {
-                if (Main.settings.DevDebug)
-                    Debug.Log($"[ShopRework] Registered shop item: {item.name} no price data at {shopNameByParent}");
-            }
+            if (item.Data != null)
+			{
+				string key = $"{shopNameByParent}::{item.name}";
+
+				// stabilen Originalpreis NUR EINMAL speichern
+				if (!originalPricesByKey.ContainsKey(key))
+				{
+					originalPricesByKey[key] = item.Data.pricePerUnit;
+
+					if (Main.settings.DevDebug)
+						Debug.Log($"[ShopRework] Stored ORIGINAL price {item.Data.pricePerUnit} for {key}");
+				}
+
+				// instanzbezogen weiterhin merken (nur Fallback)
+				if (!originalPrices.ContainsKey(item))
+					originalPrices[item] = item.Data.pricePerUnit;
+			}
+			else
+			{
+				if (Main.settings.DevDebug)
+					Debug.Log($"[ShopRework] Registered shop item: {item.name} no price data at {shopNameByParent}");
+			}
+
 
             if (Main.settings.DevDebug && !discountsAppliedOnce && Main.enabled && !discountsLoadedFromSavegame)
             {
@@ -623,9 +638,13 @@ namespace ShopRework
 				string shopName = Main.GetShopNameFromItem(i);
 
 				float discount = pct > 0 ? pct : UnityEngine.Random.Range(5f, 50f);
-				float original = originalPrices.TryGetValue(i, out float p)
-					? p
-					: i.Data.pricePerUnit;
+				string key = $"{shopName}::{i.name}";
+
+				float original =
+					originalPricesByKey.TryGetValue(key, out float stable)
+						? stable
+						: (originalPrices.TryGetValue(i, out float fallback) ? fallback : i.Data.pricePerUnit);
+
 
 				float newPrice = Mathf.Round(original * (1f - discount / 100f));
 				i.Data.pricePerUnit = newPrice;
@@ -711,7 +730,10 @@ namespace ShopRework
                 if (Main.settings.DevDebug)
                 {
                     string cleanName = CleanItemName(chosen.name);
-                    float original = originalPrices.TryGetValue(chosen, out float p) ? p : chosen.Data.pricePerUnit;
+                    string priceKey = $"{entry.shopName}::{chosen.name}";
+					float original =
+						originalPricesByKey.TryGetValue(priceKey, out float stable) ? stable : chosen.Data.pricePerUnit;
+
                     float newPrice = chosen.Data.pricePerUnit;
                     Debug.Log($"[ShopRework] (Reapply) Shop '{entry.shopName}' discounted {cleanName}, Price: {original}$ -{entry.discount:0.#}% = {newPrice}$");
                 }
@@ -728,7 +750,14 @@ namespace ShopRework
             if (!originalPrices.ContainsKey(item))
                 originalPrices[item] = item.Data.pricePerUnit;
 
-            float original = originalPrices.TryGetValue(item, out float p) ? p : item.Data.pricePerUnit;
+            string shopName = Main.GetShopNameFromItem(item);
+			string key = $"{shopName}::{item.name}";
+
+			float original =
+				originalPricesByKey.TryGetValue(key, out float stable)
+					? stable
+					: (originalPrices.TryGetValue(item, out float fallback) ? fallback : item.Data.pricePerUnit);
+
             float newPrice = Mathf.Round(original * (1f - discount / 100f));
             item.Data.pricePerUnit = newPrice;
             item.UpdateTexts();
@@ -738,12 +767,27 @@ namespace ShopRework
         }
 
         private static void ResetDiscount(ScanItemCashRegisterModule item)
-        {
-            if (item?.Data == null) return;
-            if (originalPrices.TryGetValue(item, out float p)) item.Data.pricePerUnit = p;
-            item.UpdateTexts();
-            var t = AccessPrivateText(item); if (t != null) t.color = Color.black;
-        }
+		{
+			if (item?.Data == null) return;
+
+			string shopName = Main.GetShopNameFromItem(item);
+			string key = $"{shopName}::{item.name}";
+
+			// Primär: stabiler Originalpreis
+			if (originalPricesByKey.TryGetValue(key, out float stablePrice))
+			{
+				item.Data.pricePerUnit = stablePrice;
+			}
+			// Fallback (sollte praktisch nie greifen)
+			else if (originalPrices.TryGetValue(item, out float fallback))
+			{
+				item.Data.pricePerUnit = fallback;
+			}
+
+			item.UpdateTexts();
+			var t = AccessPrivateText(item);
+			if (t != null) t.color = Color.black;
+		}
 
         private static TextMeshPro? AccessPrivateText(ScanItemCashRegisterModule item)
         {
@@ -964,7 +1008,6 @@ namespace ShopRework
                     break;
                 }
             }
-            ShopReworkManager.ReapplySavedDiscounts();
         }
     }
 
