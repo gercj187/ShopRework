@@ -22,6 +22,8 @@ namespace ShopRework
 		
 		public bool AllowPaintCanDiscounts = false;
 		public bool AllowModPaintCanDiscounts = false;
+		
+		public bool UseDailyDiscounts = true;
         public bool UseWeeklyDiscounts = false;
 
         public bool EnableShopBlocking = true;
@@ -39,7 +41,28 @@ namespace ShopRework
         public void Draw()
         {
             GUILayout.Label("<b>Discount Configuration:</b>");
-            UseWeeklyDiscounts = GUILayout.Toggle(UseWeeklyDiscounts, "Apply discounts weekly");
+			
+            bool dailyBefore = UseDailyDiscounts;
+			bool dailyAfter = GUILayout.Toggle(UseDailyDiscounts, "Apply discounts daily");
+			if (dailyAfter && !dailyBefore) 
+			{
+				UseDailyDiscounts = true;
+				UseWeeklyDiscounts = false;
+			}
+
+			bool weeklyBefore = UseWeeklyDiscounts;
+			bool weeklyAfter = GUILayout.Toggle(UseWeeklyDiscounts, "Apply discounts weekly (Mondays)");
+			if (weeklyAfter && !weeklyBefore) 
+			{
+				UseWeeklyDiscounts = true;
+				UseDailyDiscounts = false;
+			}
+
+			if (!UseDailyDiscounts && !UseWeeklyDiscounts)
+			{
+				UseDailyDiscounts = true;
+			}
+
             GUILayout.Label($"Number of Discounted Items: {discountedItemsPerDay}");
             discountedItemsPerDay = (int)GUILayout.HorizontalSlider(discountedItemsPerDay, 0, 50);
 
@@ -96,6 +119,9 @@ namespace ShopRework
 
     static class Main
     {
+		private static ShopShelves[] cachedShelves = Array.Empty<ShopShelves>();
+		private const float SHELVES_SCAN_INTERVAL = 60f;
+
         public static Settings settings = null!;
         public static bool enabled;
         public static Harmony harmony = null!;
@@ -291,6 +317,20 @@ namespace ShopRework
                     SpawnBlockerAt(i, false);
             }
         }
+		
+		public static bool HasNearbyShopShelves(Vector3 shopPos, float radius = 60f)
+		{
+			if (allShops == null || allShops.Count == 0) return false;
+
+			float sqrRadius = radius * radius;
+			foreach (var shop in allShops)
+			{
+				if (shop == null) continue;
+				if ((shop.transform.position - shopPos).sqrMagnitude <= sqrRadius)
+					return true;
+			}
+			return false;
+		}
 
         public static string GetShopNameFromItem(ScanItemCashRegisterModule item)
         {
@@ -380,6 +420,8 @@ namespace ShopRework
 
     public class ShopReworkWatcher : MonoBehaviour
     {
+		private HashSet<int> verifiedShopIndices = new HashSet<int>();
+		
         private float checkInterval = 60f;
         private float timeSinceLastCheck = 0f;
         private bool? lastShopStatus = null;
@@ -433,53 +475,76 @@ namespace ShopRework
         }
 
         private void HandleShopBlockers()
-        {
-            var clock = UnityEngine.Object.FindObjectOfType<WorldClockController>();
-            if (clock == null) return;
+		{
+			if (!Main.settings.EnableShopBlocking)
+			{
+				if (lastShopStatus != false)
+				{
+					foreach (var b in Main.spawnedBlockers)
+						if (b != null && b.activeSelf) b.SetActive(false);
+					lastShopStatus = false;
+					verifiedShopIndices.Clear();
+				}
+				return; 
+			}
 
-            DateTime now = clock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
-            float hour = now.Hour + now.Minute / 60f;
-            DayOfWeek day = (DayOfWeek)(Main.dayCounter % 7);
-            bool isSunday = day == DayOfWeek.Sunday;
-            float open = Main.settings.ShopOpenHour;
-            float close = Main.settings.ShopCloseHour;
-            bool isNight = close > open ? (hour >= close || hour < open) : (hour >= close && hour < open);
-            bool shouldBeBlocked = (Main.settings.ShopClosedOnSunday && isSunday) || isNight;
+			var clock = UnityEngine.Object.FindObjectOfType<WorldClockController>();
+			if (clock == null) return;
 
-            if (!shouldBeBlocked)
-            {
-                foreach (var b in Main.spawnedBlockers)
-                    if (b != null && b.activeSelf)
-                        b.SetActive(false);
+			Vector3 playerPos = PlayerManager.PlayerTransform?.position ?? Vector3.zero;
 
-                if (lastShopStatus != false)
-                {
-                    Debug.Log("[ShopRework] All Shops are opened.");
-                    lastShopStatus = false;
-                }
-                return;
-            }
+			DateTime now = clock.GetCurrentAnglesAndTimeOfDay().timeOfDay;
+			float hour = now.Hour + now.Minute / 60f;
+			DayOfWeek day = (DayOfWeek)(Main.dayCounter % 7);
+			bool isSunday = day == DayOfWeek.Sunday;
+			
+			bool isNight = Main.settings.ShopCloseHour > Main.settings.ShopOpenHour 
+				? (hour >= Main.settings.ShopCloseHour || hour < Main.settings.ShopOpenHour) 
+				: (hour >= Main.settings.ShopCloseHour && hour < Main.settings.ShopOpenHour);
+			
+			bool shouldBeBlocked = (Main.settings.ShopClosedOnSunday && isSunday) || isNight;
 
-            var allShopItems = GameObject.FindObjectsOfType<ScanItemCashRegisterModule>();
-            for (int i = 0; i < Main.shopPositions.Length; i++)
-            {
-                string blockerName = $"ShopBlocker_{i}";
-                bool hasNearbyShopItem = allShopItems.Any(item =>
-                    item != null && Vector3.Distance(item.transform.position, Main.shopPositions[i]) < 30f);
+			if (lastShopStatus == shouldBeBlocked && verifiedShopIndices.Count == Main.shopPositions.Length)
+			{
+				return; 
+			}
 
-                foreach (var b in Main.spawnedBlockers.Where(b => b != null && b.name == blockerName))
-                {
-                    if (b.activeSelf != hasNearbyShopItem)
-                        b.SetActive(hasNearbyShopItem);
-                }
-            }
+			for (int i = 0; i < Main.shopPositions.Length; i++)
+			{
+				float distSqr = (playerPos - Main.shopPositions[i]).sqrMagnitude;
 
-            if (lastShopStatus != true)
-            {
-                Debug.Log("[ShopRework] All Shops are closed.");
-                lastShopStatus = true;
-            }
-        }
+				if (distSqr > 500f * 500f) continue;
+
+				if (!verifiedShopIndices.Contains(i))
+				{
+					if (Main.HasNearbyShopShelves(Main.shopPositions[i], 120f))
+					{
+						verifiedShopIndices.Add(i);
+					}
+					else continue;
+				}
+
+				if (!Main.placedBlockerIndices.Contains(i))
+				{
+					Main.SpawnBlockerAt(i, false);
+				}
+
+				string blockerName = $"ShopBlocker_{i}";
+				foreach (var b in Main.spawnedBlockers)
+				{
+					if (b != null && b.name == blockerName && b.activeSelf != shouldBeBlocked)
+					{
+						b.SetActive(shouldBeBlocked);
+					}
+				}
+			}
+
+			if (lastShopStatus != shouldBeBlocked)
+			{
+				Debug.Log($"[ShopRework] Shops are now: {(shouldBeBlocked ? "CLOSED" : "OPEN")}");
+				lastShopStatus = shouldBeBlocked;
+			}
+		}
     }
 
     public class SimpleZoneBlocker : ZoneBlocker
@@ -964,17 +1029,14 @@ namespace ShopRework
             go.AddComponent<ShopReworkWatcher>();
             UnityEngine.Object.DontDestroyOnLoad(go);
 
-            var allShopItems = GameObject.FindObjectsOfType<ScanItemCashRegisterModule>();
             for (int i = 0; i < Main.shopPositions.Length; i++)
-            {
-                bool hasNearbyShopItem = allShopItems.Any(item =>
-                    item != null &&
-                    Vector3.Distance(item.transform.position, Main.shopPositions[i]) < 30f);
+			{
+				bool hasRealShop = Main.HasNearbyShopShelves(Main.shopPositions[i], 30f);
 
-                if (hasNearbyShopItem)
-                    Main.SpawnBlockerAt(i, false);
-            }
-
+				if (hasRealShop)
+					Main.SpawnBlockerAt(i, false);
+			}
+			
             Debug.Log("[ShopRework] Shops initialised.");
         }
     }
