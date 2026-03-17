@@ -1,10 +1,11 @@
 {
 	"Id": "ShopRework",
-	"Version": "1.09.0",
+	"Version": "2.00.1",
 	"DisplayName": "ShopRework",
 	"Author": "CJ187",
 	"Credits": "Coookie, NotAnOption and ChatGPT",
 	"EntryMethod": "ShopRework.Main.Load",
 	"ManagerVersion": "0.27.2",
-	"HomePage": "https://www.nexusmods.com/derailvalley/mods/1200"
+	"HomePage": "https://www.nexusmods.com/derailvalley/mods/1200",
+	"Repository": "https://raw.githubusercontent.com/gercj187/ShopRework/refs/heads/main/repository.json"
 }

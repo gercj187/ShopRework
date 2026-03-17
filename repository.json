@@ -2,7 +2,8 @@
 	"Releases": [
 		{
 			"Id": "ShopRework",
-			"Version": "1.0.0",
+			"Version": "2.00.1",
+			"DownloadUrl": "https://github.com/gercj187/ShopRework/releases/download/ShopRework/ShopRework_v2.00.1.zip"
 		}
 	]
 }
