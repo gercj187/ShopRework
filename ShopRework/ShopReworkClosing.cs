@@ -63,6 +63,7 @@ namespace ShopRework
 
         private readonly Dictionary<string, GameObject> spawnedObjects = new();
 		private readonly Dictionary<string, GameObject> spawnedBlockers = new();
+		private readonly Dictionary<string, GameObject> spawnedTriggers = new();
 		public  readonly Dictionary<int, List<GameObject>> shopVisualObjects = new();
 				
 		private int GetShopIndexFromRoot(string root)
@@ -84,59 +85,6 @@ namespace ShopRework
 			new Vector2Int(3,11),  // CityWest
 			new Vector2Int(26,7)   // Harbor
 		};
-		
-		// ======================================================
-		// SHOP ENTRY BELL
-		// ======================================================
-
-		private static AudioClip? shopBellClip;
-		private static bool bellLoadAttempted;
-
-		private static void EnsureShopBellLoaded()
-		{
-			if (shopBellClip != null || bellLoadAttempted)
-				return;
-
-			bellLoadAttempted = true;
-
-			shopBellClip = Resources.Load<AudioClip>("ServicePoint_Full_01_Bell");
-
-			if (shopBellClip != null)
-			{
-				Debug.Log("[ShopRework] Loaded ServicePoint_Full_01_Bell");
-			}
-			else
-			{
-				Debug.Log("[ShopRework] ServicePoint_Full_01_Bell NOT found");
-			}
-		}
-
-		private static void PlayShopBell(Vector3 position)
-		{
-			EnsureShopBellLoaded();
-
-			if (shopBellClip == null)
-				return;
-
-			GameObject go = new GameObject("ShopBell_Audio");
-
-			go.transform.SetParent(WorldMover.OriginShiftParent, false);
-			go.transform.position = position;
-
-			var src = go.AddComponent<AudioSource>();
-
-			src.clip = shopBellClip;
-			src.volume = 1f;
-			src.pitch = 1f;
-			src.spatialBlend = 1f;
-			src.minDistance = 2f;
-			src.maxDistance = 50f;
-			src.rolloffMode = AudioRolloffMode.Logarithmic;
-
-			src.Play();
-
-			UnityEngine.Object.Destroy(go, shopBellClip.length + 0.5f);
-		}
 		
 		private IEnumerator RegisterTerrainGrid()
 		{
@@ -284,8 +232,6 @@ namespace ShopRework
 		
 		public class SimpleZoneBlocker : ZoneBlocker
 		{
-			private bool bellPlayed = false;
-
 			public override string GetHoverText()
 			{
 				var s = Main.settings;
@@ -304,7 +250,7 @@ namespace ShopRework
 				}
 
 				return
-					"Shop Closed!\n\n" +
+					"Shop opening times:\n\n" +
 					Format("Mon", DayOfWeek.Monday, s.Monday) + "\n" +
 					Format("Tue", DayOfWeek.Tuesday, s.Tuesday) + "\n" +
 					Format("Wed", DayOfWeek.Wednesday, s.Wednesday) + "\n" +
@@ -312,43 +258,6 @@ namespace ShopRework
 					Format("Fri", DayOfWeek.Friday, s.Friday) + "\n" +
 					Format("Sat", DayOfWeek.Saturday, s.Saturday) + "\n" +
 					Format("Sun", DayOfWeek.Sunday, s.Sunday);
-			}
-
-			private void OnTriggerEnter(Collider other)
-			{
-				Debug.Log("[ShopRework] Trigger entered by: " + other.name);
-
-				if (ShopReworkClosing.Instance == null)
-					return;
-
-				if (ShopReworkClosing.Instance.shopsClosed)
-					return;
-
-				if (bellPlayed)
-					return;
-
-				if (PlayerManager.PlayerTransform == null)
-					return;
-
-				if (!other.transform.IsChildOf(PlayerManager.PlayerTransform))
-					return;
-
-				bellPlayed = true;
-
-				ShopReworkClosing.PlayShopBell(transform.position);
-
-				Debug.Log("[ShopRework] Shop entry bell played.");
-			}
-
-			private void OnTriggerExit(Collider other)
-			{
-				if (PlayerManager.PlayerTransform == null)
-					return;
-
-				if (!other.transform.IsChildOf(PlayerManager.PlayerTransform))
-					return;
-
-				bellPlayed = false;
 			}
 		}
 		
@@ -370,18 +279,42 @@ namespace ShopRework
 
 			blocker.transform.position = unitySpawnPos - left * 1f;
 			blocker.transform.rotation = Quaternion.Euler(shopRotations[shopKey]);
-			blocker.transform.localScale = new Vector3(9f, 8f, 6f);
+			blocker.transform.localScale = new Vector3(8.99f, 8f, 5.99f);
 
 			var col = blocker.GetComponent<BoxCollider>();
-			col.isTrigger = false;
-			var rb = blocker.AddComponent<Rigidbody>();
-			rb.isKinematic = true;
-			rb.useGravity = false;
-
-			var zb = blocker.AddComponent<SimpleZoneBlocker>();
-			zb.blockerObjectsParent = blocker;
+			col.isTrigger = false;			
+			blocker.tag = "NO_TELEPORT";
 
 			spawnedBlockers.Add(shopKey, blocker);
+		}		
+		
+		private void SpawnTrigger(string shopKey, Vector3 unitySpawnPos)
+		{
+			if (spawnedTriggers.ContainsKey(shopKey))
+				return;
+
+			GameObject trigger = GameObject.CreatePrimitive(PrimitiveType.Cube);
+
+			trigger.name = "ShopTrigger_" + shopKey;
+
+			UnityEngine.Object.Destroy(trigger.GetComponent<MeshRenderer>());
+			UnityEngine.Object.Destroy(trigger.GetComponent<MeshFilter>());
+
+			trigger.transform.SetParent(WorldMover.OriginShiftParent, false);
+
+			Vector3 left = Quaternion.Euler(shopRotations[shopKey]) * Vector3.left;
+
+			trigger.transform.position = unitySpawnPos - left * 1f;
+			trigger.transform.rotation = Quaternion.Euler(shopRotations[shopKey]);
+			trigger.transform.localScale = new Vector3(9f, 8f, 6f);
+
+			var col = trigger.GetComponent<BoxCollider>();
+			col.isTrigger = true;
+
+			var zb = trigger.AddComponent<SimpleZoneBlocker>();
+			zb.blockerObjectsParent = trigger;
+
+			spawnedTriggers.Add(shopKey, trigger);
 		}
 		
 		private void SetBlockerState(bool closed)
@@ -391,26 +324,7 @@ namespace ShopRework
 				if (blocker == null)
 					continue;
 
-				var col = blocker.GetComponent<Collider>();
-
-				if (col == null)
-					continue;
-
-				// CHANGE: Collider bleibt immer aktiv
-				col.enabled = true;
-
-				if (closed)
-				{
-					// CLOSED → blockierend
-					col.isTrigger = false;
-					blocker.tag = "NO_TELEPORT";
-				}
-				else
-				{
-					// OPEN → nur Trigger (durchgehbar)
-					col.isTrigger = true;
-					blocker.tag = "Untagged";
-				}
+				blocker.SetActive(closed);
 			}
 		}
 		
@@ -500,21 +414,6 @@ namespace ShopRework
 
             if (shouldClose)
 			{
-				foreach (var register in CashRegisterBase.allCashRegisters)
-				{
-					if (register == null)
-						continue;
-
-					if (!register.gameObject.scene.isLoaded)
-						continue;
-										
-					var scanModule = register.GetComponentInChildren<ScanItemCashRegisterModule>(true);
-					if (scanModule == null)
-						continue;
-
-					register.Cancel();
-				}
-
 				DelayedShopClose();
 				SetBlockerState(true);
 
@@ -557,10 +456,6 @@ namespace ShopRework
 				register.Cancel();
 				register.IsProcessingTransaction = true;
 
-				var colliders = register.GetComponentsInChildren<Collider>(true);
-				foreach (var col in colliders)
-					col.enabled = false;
-
 				var buttons = register.GetComponentsInChildren<ButtonBase>(true);
 				foreach (var b in buttons)
 					b.enabled = false;
@@ -582,10 +477,6 @@ namespace ShopRework
 					continue;
 
 				register.IsProcessingTransaction = false;
-
-				var colliders = register.GetComponentsInChildren<Collider>(true);
-				foreach (var col in colliders)
-					col.enabled = true;
 
 				var buttons = register.GetComponentsInChildren<ButtonBase>(true);
 				foreach (var b in buttons)
@@ -631,12 +522,45 @@ namespace ShopRework
 			if (tuple.validTime)
 				Evaluate(tuple.timeOfDay);
 		}
+		
+		private void ResetAllRegisters()
+		{
+			foreach (var register in CashRegisterBase.allCashRegisters)
+			{
+				if (register == null)
+					continue;
+
+				if (!register.gameObject.scene.isLoaded)
+					continue;
+
+				Debug.Log("[ShopRework] Resetting register: " + register.name);
+
+				register.Cancel();
+
+				var modules = register.GetComponentsInChildren<CashRegisterModule>(true);
+				foreach (var m in modules)
+				{
+					m.ResetData();
+				}
+
+				var scanModules = register.GetComponentsInChildren<ScanItemCashRegisterModule>(true);
+				foreach (var sm in scanModules)
+				{
+					sm.UpdateTexts();
+				}
+			}
+		}
 
 		private void DelayedShopClose()
 		{
 			SpawnClosedObjects();
+
+			ResetAllRegisters();
+
 			DisableRegisterPhysics();
+
 			ForcePlayerOutOfClosedShops();
+
 			for (int i = 0; i < 5; i++)
 				SetShopVisualState(i, false);
 		}
@@ -699,6 +623,46 @@ namespace ShopRework
 				Debug.Log("[ShopRework] Cached shop visuals: " + shopVisualObjects.Count);
 		}
 		
+		private void SpawnAllTriggers()
+		{
+			foreach (var shop in shopPositions)
+			{
+				if (spawnedTriggers.ContainsKey(shop.Key))
+					continue;
+
+				Vector3 worldOffset = WorldMover.currentMove;
+				Vector3 unitySpawnPos = shop.Value + worldOffset;
+
+				SpawnTrigger(shop.Key, unitySpawnPos);
+			}
+
+			if (Main.settings.DevDebug)
+				Debug.Log("[ShopRework] All shop triggers spawned (persistent).");
+		}
+		
+		private void RebuildTriggersAfterStreaming()
+		{
+			foreach (var kvp in spawnedTriggers)
+			{
+				string shopKey = kvp.Key;
+				GameObject trigger = kvp.Value;
+
+				if (trigger == null)
+					continue;
+
+				Vector3 worldOffset = WorldMover.currentMove;
+				Vector3 unitySpawnPos = shopPositions[shopKey] + worldOffset;
+
+				Vector3 left = Quaternion.Euler(shopRotations[shopKey]) * Vector3.left;
+
+				trigger.transform.position = unitySpawnPos - left * 1f;
+				trigger.transform.rotation = Quaternion.Euler(shopRotations[shopKey]);
+			}
+
+			if (Main.settings.DevDebug)
+				Debug.Log("[ShopRework] Triggers repositioned after streaming.");
+		}
+		
 		public static IEnumerator WaitForWorldAndCacheShops()
 		{
 			while (!WorldStreamingInit.IsStreamingDone)
@@ -712,6 +676,7 @@ namespace ShopRework
 			if (Instance != null)
 			{
 				Instance.CacheAllShopVisuals();
+				Instance.SpawnAllTriggers();
 
 				if (Instance.clock != null)
 				{
@@ -759,6 +724,7 @@ namespace ShopRework
 				}
 
 				Instance.RebuildAllShopVisuals();
+				Instance.RebuildTriggersAfterStreaming();
 			}
 		}
 		
