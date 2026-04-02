@@ -267,26 +267,63 @@ namespace ShopRework
 				return;
 
 			GameObject blocker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+			
+			// =======================
+			// DEBUG VISUAL (REMOVE ME)
+			// =======================
+			/*
+			var renderer = blocker.GetComponent<MeshRenderer>();
+			if (renderer != null)
+			{
+				renderer.enabled = true;
+
+				var mat = new Material(Shader.Find("Standard"));
+				mat.color = new Color(1f, 0f, 0f, 1f); // halbtransparent rot
+				mat.SetFloat("_Mode", 3); // Transparent
+				mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+				mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+				mat.SetInt("_ZWrite", 0);
+				mat.DisableKeyword("_ALPHATEST_ON");
+				mat.EnableKeyword("_ALPHABLEND_ON");
+				mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+				mat.renderQueue = 3000;
+
+				renderer.material = mat;
+			}
+			*/
+			// =======================
 
 			blocker.name = "ShopBlocker_" + shopKey;
 
+			//DEBUG color
 			UnityEngine.Object.Destroy(blocker.GetComponent<MeshRenderer>());
 			UnityEngine.Object.Destroy(blocker.GetComponent<MeshFilter>());
 
 			blocker.transform.SetParent(WorldMover.OriginShiftParent, false);
 
 			Vector3 left = Quaternion.Euler(shopRotations[shopKey]) * Vector3.left;
+			Vector3 forward = Quaternion.Euler(shopRotations[shopKey]) * Vector3.forward;
+			Vector3 up   = Vector3.up;
 
-			blocker.transform.position = unitySpawnPos - left * 1f;
+			float height = 1.85f;
+			float width  = 0.1f;
+			float depth  = 1.0f;
+
+			Vector3 basePos = unitySpawnPos + left * 3.4f;
+			basePos += forward * 1.0f;
+			Vector3 finalPos = basePos + up * 3.0f;
+
+			blocker.transform.position = finalPos;
 			blocker.transform.rotation = Quaternion.Euler(shopRotations[shopKey]);
-			blocker.transform.localScale = new Vector3(8.99f, 8f, 5.99f);
+			blocker.transform.localScale = new Vector3(width, height, depth);
 
 			var col = blocker.GetComponent<BoxCollider>();
-			col.isTrigger = false;			
-			blocker.tag = "NO_TELEPORT";
+			col.isTrigger = false;
+
+			blocker.layer = 0;
 
 			spawnedBlockers.Add(shopKey, blocker);
-		}		
+		}	
 		
 		private void SpawnTrigger(string shopKey, Vector3 unitySpawnPos)
 		{
@@ -310,6 +347,8 @@ namespace ShopRework
 
 			var col = trigger.GetComponent<BoxCollider>();
 			col.isTrigger = true;
+
+			trigger.tag = "NO_TELEPORT";
 
 			var zb = trigger.AddComponent<SimpleZoneBlocker>();
 			zb.blockerObjectsParent = trigger;
@@ -351,12 +390,12 @@ namespace ShopRework
 
 				float dist = Vector3.Distance(playerPos, shopPos);
 
-				if (dist > 6f)
+				if (dist > 5f)
 					continue;
 
 				Vector3 right = Quaternion.Euler(shopRotations[shop.Key]) * Vector3.right;
 
-				Vector3 safePosition = shopPos - right * 6f;
+				Vector3 safePosition = shopPos - right * 5f;
 
 				safePosition.y = playerPos.y;
 
@@ -417,7 +456,7 @@ namespace ShopRework
 				DelayedShopClose();
 				SetBlockerState(true);
 
-				if (visualsCached)
+				if (shopVisualObjects.Count > 0)
 				{
 					for (int i = 0; i < 5; i++)
 						SetShopVisualState(i, false);
@@ -429,7 +468,7 @@ namespace ShopRework
 				EnableRegisterPhysics();
 				SetBlockerState(false);
 
-				if (visualsCached)
+				if (shopVisualObjects.Count > 0)
 				{
 					for (int i = 0; i < 5; i++)
 						SetShopVisualState(i, true);
@@ -567,60 +606,56 @@ namespace ShopRework
 		
 		public void CacheAllShopVisuals()
 		{
-			if (visualsCached)
-			return;
-		
-			shopVisualObjects.Clear();
+			var newCache = new Dictionary<int, List<GameObject>>();
 
 			var renderers = GameObject.FindObjectsOfType<MeshRenderer>();
-			
+
 			foreach (var r in renderers)
 			{
 				if (r == null)
 					continue;
 
 				var go = r.gameObject;
-
 				if (go == null)
 					continue;
 
 				var scene = go.scene;
-
-				if (!scene.IsValid())
-					continue;
-
-				if (!scene.isLoaded)
+				if (!scene.IsValid() || !scene.isLoaded)
 					continue;
 
 				if (!r.name.Contains("ItemShop"))
 					continue;
 
 				var root = r.transform.root;
-
-				if (root == null)
-					continue;
-
-				if (!root.name.StartsWith("Far__"))
+				if (root == null || !root.name.StartsWith("Far__"))
 					continue;
 
 				int index = GetShopIndexFromRoot(root.name);
-
 				if (index < 0)
 					continue;
 
-				if (!shopVisualObjects.ContainsKey(index))
-					shopVisualObjects[index] = new List<GameObject>();
+				if (!newCache.ContainsKey(index))
+					newCache[index] = new List<GameObject>();
 
-				shopVisualObjects[index].Add(go);
+				newCache[index].Add(go);
 			}
 			
-			if (shopVisualObjects.Count > 0)
+			if (newCache.Count > 0)
 			{
+				foreach (var kvp in newCache)
+				{
+					shopVisualObjects[kvp.Key] = kvp.Value;
+				}
+
 				visualsCached = true;
+
+				if (Main.settings.DevDebug)
+					Debug.Log("[ShopRework] Cache UPDATED → " + shopVisualObjects.Count);
 			}
-			
-			if (Main.settings.DevDebug)
-				Debug.Log("[ShopRework] Cached shop visuals: " + shopVisualObjects.Count);
+			else
+			{
+				Debug.LogWarning("[ShopRework] Cache skipped (no shops found) → keeping old cache");
+			}
 		}
 		
 		private void SpawnAllTriggers()
@@ -739,7 +774,28 @@ namespace ShopRework
 				yield break;
 
 			Instance.CacheAllShopVisuals();
+
+			int attempts = 0;
+
+			while (attempts < 5)
+			{
+				if (Main.settings.DevDebug)
+					Debug.Log("[ShopRework] Cache attempt #" + attempts + " → found: " + Instance.shopVisualObjects.Count);
+
+				if (Instance.shopVisualObjects.Count > 0)
+					break;
+
+				attempts++;
+
+				yield return new WaitForSeconds(0.5f);
+
+				Instance.CacheAllShopVisuals();
+			}
+
 			Instance.RebuildAllShopVisuals();
+
+			if (Main.settings.DevDebug)
+				Debug.Log("[ShopRework] Terrain streaming rebuild finished.");
 		}
     }
 	
